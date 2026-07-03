@@ -7,6 +7,8 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
+from .models import ScanResult
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +27,7 @@ CREATE TABLE IF NOT EXISTS scans (
 """
 
 
-def result_to_dict(result) -> dict:
+def result_to_dict(result: ScanResult) -> dict:
     """Flatten a ScanResult into a JSON-safe dict."""
     return {
         "scan_timestamp": result.scan_timestamp,
@@ -38,14 +40,14 @@ def result_to_dict(result) -> dict:
         "risk_score": result.assessment.score if result.assessment else None,
         "risk_level": result.assessment.level if result.assessment else None,
         "findings": (
-            [f.to_dict() for f in result.assessment.findings]
+            [f.model_dump() for f in result.assessment.findings]
             if result.assessment else []
         ),
         "error": result.fetch.error,
     }
 
 
-def write_json(results, path: str) -> None:
+def write_json(results: list[ScanResult], path: str) -> None:
     payload = [result_to_dict(r) for r in results]
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
@@ -58,7 +60,7 @@ CSV_FIELDS = [
 ]
 
 
-def write_csv(results, path: str) -> None:
+def write_csv(results: list[ScanResult], path: str) -> None:
     with open(path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -71,7 +73,7 @@ def write_csv(results, path: str) -> None:
             writer.writerow(row)
 
 
-def write_sqlite(results, path: str) -> None:
+def write_sqlite(results: list[ScanResult], path: str) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.executescript(SCHEMA)
@@ -94,7 +96,7 @@ def write_sqlite(results, path: str) -> None:
         conn.close()
 
 
-def render_screen(results) -> str:
+def render_screen(results: list[ScanResult]) -> str:
     """Human-readable report."""
     lines: list[str] = []
     for result in results:

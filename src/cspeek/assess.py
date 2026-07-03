@@ -9,7 +9,7 @@ bounded, no vague judgement).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from .models import Assessment, Finding
 
 SEVERITY_SCORES = {"low": 5, "medium": 10, "high": 20, "critical": 40}
 
@@ -21,40 +21,6 @@ LEVEL_THRESHOLDS = (  # (minimum score, level) evaluated top-down
 )
 
 FETCH_FALLBACK_DIRECTIVES = ("script-src", "object-src")
-
-
-@dataclass
-class Finding:
-    rule_id: str
-    severity: str
-    directive: str
-    explanation: str
-    score: int
-    remediation: str
-
-    def to_dict(self) -> dict:
-        return {
-            "rule_id": self.rule_id,
-            "severity": self.severity,
-            "directive": self.directive,
-            "explanation": self.explanation,
-            "score": self.score,
-            "remediation": self.remediation,
-        }
-
-
-@dataclass
-class Assessment:
-    score: int
-    level: str
-    findings: list[Finding] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        return {
-            "score": self.score,
-            "level": self.level,
-            "findings": [f.to_dict() for f in self.findings],
-        }
 
 
 def parse_csp(policy: str) -> dict[str, list[str]]:

@@ -8,34 +8,17 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urljoin
+
+from .models import FetchResult
 
 DEFAULT_TIMEOUT = 10.0
 MAX_REDIRECTS = 10
-USER_AGENT = "CSPeek/0.1 (+https://github.com/goldjg/CSPeek)"
+USER_AGENT = "CSPeek/0.2 (+https://github.com/goldjg/CSPeek)"
 
 CSP_HEADER = "Content-Security-Policy"
 CSP_RO_HEADER = "Content-Security-Policy-Report-Only"
-
-
-@dataclass
-class FetchResult:
-    """Outcome of retrieving one URL."""
-
-    input_url: str
-    final_url: str
-    status_code: int | None = None
-    csp: str | None = None
-    csp_report_only: str | None = None
-    redirects: int = 0
-    error: str | None = None
-    body: str = ""
-    content_type: str = ""
-
-    @property
-    def has_csp(self) -> bool:
-        return self.csp is not None
 
 
 @dataclass

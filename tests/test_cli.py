@@ -5,8 +5,8 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-from csp_scanner import cli
-from csp_scanner.scanner import scan_targets
+from cspeek import cli
+from cspeek.scanner import scan_targets
 
 from tests.fakes import FakeFetcher, html_response
 

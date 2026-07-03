@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from csp_scanner.inputs import InputError, load_targets, normalise_url
+from cspeek.inputs import InputError, load_targets, normalise_url
 
 
 class NormaliseUrlTests(unittest.TestCase):

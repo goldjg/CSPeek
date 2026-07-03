@@ -12,6 +12,14 @@ from .discovery import DEFAULT_MAX_DEPTH, DEFAULT_MAX_URLS
 from .fetch import DEFAULT_TIMEOUT
 from .inputs import InputError, load_targets
 from .output import render_screen, write_csv, write_json, write_sqlite
+from .report import (
+    ReportError,
+    load_json_report,
+    load_sqlite_report,
+    render_report_screen,
+    summarise,
+    write_report_json,
+)
 from .scanner import scan_targets
 
 EPILOG = (
@@ -22,7 +30,7 @@ EPILOG = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="csp_scanner",
+        prog="cspeek",
         description="Audit Content-Security-Policy response headers.",
         epilog=EPILOG,
     )
@@ -70,6 +78,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet", action="store_true",
         help="Suppress the human-readable report on stdout.",
     )
+
+    report = sub.add_parser(
+        "report",
+        help="Summarise a prior JSON or SQLite scan output without rescanning.",
+        epilog=EPILOG,
+    )
+    source = report.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--json", metavar="PATH", help="Read prior JSON results."
+    )
+    source.add_argument(
+        "--sqlite", metavar="PATH", help="Read prior SQLite results."
+    )
+    report.add_argument(
+        "--output", metavar="PATH",
+        help="Write the summary as JSON to PATH.",
+    )
+    report.add_argument(
+        "--quiet", action="store_true",
+        help="Suppress the human-readable summary on stdout.",
+    )
+
     return parser
 
 
@@ -105,6 +135,24 @@ def main(argv: list[str] | None = None) -> int:
 
         had_errors = any(r.fetch.error for r in results)
         return 1 if had_errors else 0
+
+    if args.command == "report":
+        try:
+            if args.json:
+                results = load_json_report(args.json)
+            else:
+                results = load_sqlite_report(args.sqlite)
+        except ReportError as exc:
+            parser.error(str(exc))
+            return 2  # unreachable; parser.error exits
+
+        report = summarise(results)
+        if args.output:
+            write_report_json(report, args.output)
+        if not args.quiet:
+            print(render_report_screen(report))
+        return 0
+
     return 2
 
 

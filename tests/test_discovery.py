@@ -2,8 +2,8 @@
 
 import unittest
 
-from csp_scanner.discovery import crawl, enumerate_subdomains, extract_links, same_origin
-from csp_scanner.fetch import fetch_url
+from cspeek.discovery import crawl, enumerate_subdomains, extract_links, same_origin
+from cspeek.fetch import fetch_url
 
 from tests.fakes import FakeFetcher, html_response
 

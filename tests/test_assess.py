@@ -2,7 +2,7 @@
 
 import unittest
 
-from csp_scanner.assess import assess, parse_csp, score_to_level
+from cspeek.assess import assess, parse_csp, score_to_level
 
 
 def rule_ids(assessment):

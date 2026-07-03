@@ -8,26 +8,16 @@ deterministic CSP hygiene findings.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from .assess import Assessment, assess
+from .assess import assess
 from .discovery import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_URLS,
     crawl,
     enumerate_subdomains,
 )
-from .fetch import DEFAULT_TIMEOUT, FetchResult, fetch_url
+from .fetch import DEFAULT_TIMEOUT, fetch_url
+from .models import FetchResult, ScanResult
 from .output import now_iso
-
-
-@dataclass
-class ScanResult:
-    """One scanned URL: fetch outcome plus risk assessment."""
-
-    fetch: FetchResult
-    assessment: Assessment | None
-    scan_timestamp: str
 
 
 def scan_targets(

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cspeek"
+version = "0.2.0"
+description = "Defensive Content-Security-Policy configuration auditing tool."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "goldjg" }]
+keywords = ["csp", "security", "content-security-policy", "scanner"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Intended Audience :: Information Technology",
+]
+dependencies = [
+    "pydantic>=2,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/goldjg/CSPeek"
+
+[project.scripts]
+cspeek = "cspeek.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
