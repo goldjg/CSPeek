@@ -120,6 +120,12 @@ def enumerate_subdomains(
     if len(labels) > 2 and labels[0] in wordlist:
         base = ".".join(labels[1:])
 
+    scheme = parsed.scheme or "https"
     found: list[str] = []
     for word in wordlist:
-        candidate = f"
+        candidate = f"{word}.{base}"
+        if candidate == host:
+            continue
+        if resolve(candidate):
+            found.append(f"{scheme}://{candidate}/")
+    return found
