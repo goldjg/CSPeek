@@ -32,6 +32,12 @@ def normalise_url(raw: str) -> str:
         raise InputError(f"unsupported scheme {parsed.scheme!r} in {raw!r}")
     if not parsed.netloc:
         raise InputError(f"no host in {raw!r}")
+    try:
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise InputError(f"invalid host/port in {raw!r}: {exc}") from exc
+    if not host:
+        raise InputError(f"no host in {raw!r}")
     return url
 
 

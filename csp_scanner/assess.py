@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 SEVERITY_SCORES = {"low": 5, "medium": 10, "high": 20, "critical": 40}
 
 LEVEL_THRESHOLDS = (  # (minimum score, level) evaluated top-down
-    (60, "critical"),
-    (35, "high"),
+    (40, "critical"),
+    (25, "high"),
     (15, "medium"),
     (0, "low"),
 )
