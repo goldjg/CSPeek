@@ -2,7 +2,14 @@
 
 import unittest
 
-from cspeek.discovery import crawl, enumerate_subdomains, extract_links, same_origin
+from cspeek.discovery import (
+    crawl,
+    crawl_with_scope,
+    enumerate_subdomains,
+    extract_links,
+    extract_links_with_skips,
+    same_origin,
+)
 from cspeek.fetch import fetch_url
 
 from tests.fakes import FakeFetcher, html_response
@@ -24,6 +31,12 @@ class LinkExtractionTests(unittest.TestCase):
 
     def test_malformed_html_is_safe(self):
         self.assertIsInstance(extract_links("https://a.test/", "<a href='"), list)
+
+    def test_extract_links_with_skips_reports_non_http_hrefs(self):
+        html = '<a href="mailto:x@y.test">m</a> <a href="javascript:void(0)">j</a>'
+        links, skipped = extract_links_with_skips("https://a.test/", html)
+        self.assertEqual(links, [])
+        self.assertEqual(skipped, ["mailto:x@y.test", "javascript:void(0)"])
 
 
 class CrawlTests(unittest.TestCase):
@@ -77,6 +90,101 @@ class CrawlTests(unittest.TestCase):
         })
         results = crawl("https://a.test/", make_fetch(fetcher))
         self.assertEqual(len(results), 3)
+
+
+class CrawlScopeTests(unittest.TestCase):
+    """Coverage for crawl_with_scope: skip visibility and limit reporting."""
+
+    def test_same_origin_crawl_records_skipped_cross_origin_links(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(
+                body='<a href="/next">n</a> <a href="https://evil.test/">e</a>'
+            ),
+            "https://a.test/next": html_response(),
+        })
+        outcome = crawl_with_scope("https://a.test/", make_fetch(fetcher))
+        self.assertEqual(
+            [r.input_url for r in outcome.results],
+            ["https://a.test/", "https://a.test/next"],
+        )
+        self.assertEqual(len(outcome.skipped_links), 1)
+        skipped = outcome.skipped_links[0]
+        self.assertEqual(skipped.url, "https://evil.test/")
+        self.assertEqual(skipped.reason, "cross-origin-not-allowed")
+        self.assertEqual(skipped.source_url, "https://a.test/")
+
+    def test_non_http_links_are_skipped_and_recorded(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(
+                body='<a href="mailto:x@y.test">m</a> <a href="/next">n</a>'
+            ),
+            "https://a.test/next": html_response(),
+        })
+        outcome = crawl_with_scope("https://a.test/", make_fetch(fetcher))
+        reasons = {(s.url, s.reason) for s in outcome.skipped_links}
+        self.assertIn(("mailto:x@y.test", "non-http-scheme"), reasons)
+
+    def test_allow_cross_origin_follows_links_instead_of_skipping(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(
+                body='<a href="https://b.test/">b</a>'
+            ),
+            "https://b.test/": html_response(),
+        })
+        outcome = crawl_with_scope(
+            "https://a.test/", make_fetch(fetcher), same_origin_only=False
+        )
+        self.assertEqual(
+            [r.input_url for r in outcome.results],
+            ["https://a.test/", "https://b.test/"],
+        )
+        self.assertEqual(outcome.skipped_links, [])
+
+    def test_discovered_urls_lists_every_fetched_url(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(body='<a href="/next">n</a>'),
+            "https://a.test/next": html_response(),
+        })
+        outcome = crawl_with_scope("https://a.test/", make_fetch(fetcher))
+        self.assertEqual(
+            outcome.discovered_urls, ["https://a.test/", "https://a.test/next"]
+        )
+
+    def test_max_urls_limit_is_reported(self):
+        pages = {
+            f"https://a.test/{i}": html_response(body=f'<a href="/{i + 1}">next</a>')
+            for i in range(10)
+        }
+        pages["https://a.test/"] = html_response(body='<a href="/0">0</a>')
+        fetcher = FakeFetcher(pages)
+        outcome = crawl_with_scope(
+            "https://a.test/", make_fetch(fetcher), max_depth=20, max_urls=3
+        )
+        self.assertTrue(outcome.limit_reached)
+        self.assertTrue(
+            any("max-urls" in reason for reason in outcome.limit_reasons)
+        )
+
+    def test_max_depth_limit_is_reported_when_further_links_exist(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(body='<a href="/1">1</a>'),
+            "https://a.test/1": html_response(body='<a href="/2">2</a>'),
+        })
+        outcome = crawl_with_scope(
+            "https://a.test/", make_fetch(fetcher), max_depth=1
+        )
+        self.assertTrue(outcome.limit_reached)
+        self.assertTrue(
+            any("max-depth" in reason for reason in outcome.limit_reasons)
+        )
+
+    def test_no_limit_reported_when_crawl_completes_naturally(self):
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(),
+        })
+        outcome = crawl_with_scope("https://a.test/", make_fetch(fetcher))
+        self.assertFalse(outcome.limit_reached)
+        self.assertEqual(outcome.limit_reasons, [])
 
 
 class SameOriginTests(unittest.TestCase):

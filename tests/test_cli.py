@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 from cspeek import cli
-from cspeek.scanner import scan_targets
+from cspeek.scanner import scan_targets, scan_targets_with_metadata
 
 from tests.fakes import FakeFetcher, html_response
 
@@ -43,14 +43,14 @@ class ScannerTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def _run(self, argv, fetcher):
-        real_scan = scan_targets
+        real_scan = scan_targets_with_metadata
 
         def patched(targets, **kwargs):
             kwargs["fetcher"] = fetcher
             return real_scan(targets, **kwargs)
 
         buffer = io.StringIO()
-        with mock.patch.object(cli, "scan_targets", patched):
+        with mock.patch.object(cli, "scan_targets_with_metadata", patched):
             with redirect_stdout(buffer):
                 code = cli.main(argv)
         return code, buffer.getvalue()

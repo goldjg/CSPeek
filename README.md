@@ -100,6 +100,52 @@ URLs), highest-risk URLs, repeated/equivalent CSP policies, and
 remediation themes grouped across findings. It never rescans a target,
 so it is safe to run repeatedly against the same scan output.
 
+`cspeek report` also surfaces operational scan/report metadata that is
+entirely separate from CSP risk scoring: HTTP status issues, crawl scope
+(what was skipped and why), and duplicate-final-URL skips. See the
+sections below.
+
+### Final URL dedupe
+
+Different input URLs can redirect to the same final URL — for example
+`https://example.com` and `https://www.example.com` both resolving to
+`https://example.com/`. When scanning multiple inputs, crawling, or
+enumerating subdomains, `cspeek scan` deduplicates by **final URL after
+fetch**: the first input to reach a given final URL is kept in the main
+results, and later inputs that redirect to the same final URL are
+recorded as duplicate-final-URL skips instead of being reported twice.
+
+Fetch errors are never deduplicated this way, since a final URL may not
+be meaningfully known when a fetch fails — every error result is always
+kept. Duplicate-final-URL skips are written into the scan's JSON/SQLite
+metadata and shown by `cspeek report` under "Duplicate final URL skips".
+
+### Crawl scope visibility
+
+Crawling (`--crawl`) remains same-origin by default and bounded by
+`--max-depth`/`--max-urls`; cross-origin crawling is opt-in via
+`--allow-cross-origin`. Rather than silently ignoring links outside the
+crawl's scope, `cspeek scan` records:
+
+- every URL discovered/fetched during the crawl;
+- links skipped because they are cross-origin and cross-origin crawling
+  was not allowed;
+- links skipped because they use a non-http(s) scheme (`mailto:`,
+  `javascript:`, etc.);
+- whether a crawl limit (`max-depth` or `max-urls`) was reached.
+
+This is bookkeeping only: it does not change what gets fetched, only
+what gets reported. `cspeek report` shows "Skipped out-of-scope links"
+and "Crawl/discovery notes" sections when this data is present.
+
+### Status issues are not CSP findings
+
+HTTP/status issues (404s, 500s, redirect loops, connection errors) are
+operational scan findings, not CSP configuration findings, and never
+affect the deterministic CSP risk score. `cspeek report` shows them
+separately under "HTTP status summary" (status code counts) and
+"Non-success URLs" (the specific non-2xx/3xx URLs and fetch errors).
+
 ### Repeated CSP policy grouping
 
 Many sites serve an identical CSP across every page (a shared template,
@@ -145,10 +191,31 @@ Repeated CSP policies:
 Remediation themes:
   - Replace '*' with an explicit allow-list of required origins. (affects 2 URL(s); rules CSP-020)
 ------------------------------------------------------------------------
+HTTP status summary:
+  - 200: 4 URL(s)
+  - 404: 1 URL(s)
+------------------------------------------------------------------------
+Non-success URLs (2 total):
+  - https://missing.example: status 404
+  - https://e.example: OSError: connection refused
+------------------------------------------------------------------------
+Skipped out-of-scope links (1 total):
+  - https://evil.example/: cross-origin-not-allowed (found on https://a.example/)
+------------------------------------------------------------------------
+Duplicate final URL skips:
+  - https://www.a.example -> https://a.example (duplicate of https://a.example)
+------------------------------------------------------------------------
+Crawl/discovery notes:
+  - discovered URLs: 6
+------------------------------------------------------------------------
 Fetch error details:
   - https://e.example: OSError: connection refused
 ========================================================================
 ```
+
+Sections only appear when there is data to show: a scan with no crawling,
+no dedupe skips, and only successful fetches omits the status/discovery
+sections entirely.
 
 Exit code is `0` on success, `1` if any target had a fetch error (`scan`
 only), `2` for usage errors.
@@ -162,7 +229,9 @@ raw CSP header(s), risk level/score, and each finding with remediation.
 
 ### JSON
 
-An array of result objects:
+When no scan-metadata is available to persist (the plain per-URL result
+case), `cspeek scan --json` writes a bare array of result objects, the
+same shape it has always written:
 
 ```json
 [
@@ -190,6 +259,15 @@ An array of result objects:
   }
 ]
 ```
+
+`cspeek scan` always writes scan metadata (discovered/skipped URLs,
+crawl-limit status, duplicate-final-URL skips) alongside the results, so
+in practice the JSON written by `cspeek scan --json` is
+`{"results": [...], "metadata": {...}}`, where `results` holds the same
+row objects shown above. `cspeek report` transparently reads **both**
+shapes — a bare array (older scan output, or JSON hand-written/produced
+by another tool) and the `{"results": ..., "metadata": ...}` object — so
+older scan JSON remains fully report-compatible with no migration step.
 
 ### `cspeek report --output` JSON summary
 
@@ -227,14 +305,43 @@ the full schema):
       "example_urls": ["https://a.example", "https://b.example"]
     }
   ],
-  "results": ["... full per-URL ScanResult objects ..."]
+  "results": ["... full per-URL ScanResult objects ..."],
+
+  "status_code_counts": {"200": 4, "404": 1},
+  "non_success_urls": [
+    {"url": "https://missing.example", "status_code": 404, "error": null,
+     "issue_type": "http-status"},
+    {"url": "https://e.example", "status_code": null,
+     "error": "OSError: connection refused", "issue_type": "fetch-error"}
+  ],
+  "non_success_count": 2,
+  "discovered_url_count": 6,
+  "skipped_links": [
+    {"url": "https://evil.example/", "reason": "cross-origin-not-allowed",
+     "source_url": "https://a.example/"}
+  ],
+  "skipped_link_count": 1,
+  "crawl_limit_reached": false,
+  "crawl_limit_reasons": [],
+  "duplicate_final_urls": [
+    {"input_url": "https://www.a.example", "final_url": "https://a.example",
+     "duplicate_of": "https://a.example"}
+  ]
 }
 ```
+
+The fields from `status_code_counts` onward are operational scan/report
+metadata (HTTP status issues, crawl scope, final-URL dedupe) and are
+entirely separate from the deterministic CSP risk-scoring fields above
+them; they default to empty/zero/false when summarising older scan
+output that predates this metadata.
 
 `highest_risk_urls` and example-URL lists in `repeated_policies` /
 `remediation_themes` are capped (10 and 5 entries respectively) so the
 summary stays readable regardless of scan size; the underlying counts
 (`count`, `affected_url_count`, `rule_counts`) are never truncated.
+`non_success_urls` and `skipped_links` are similarly capped (20)
+with accurate `non_success_count`/`skipped_link_count` totals.
 
 
 ### CSV
@@ -260,6 +367,32 @@ CREATE TABLE IF NOT EXISTS scans (
     risk_level TEXT,
     findings TEXT,                  -- JSON array of finding objects
     error TEXT
+);
+```
+
+Scan metadata (skipped links, duplicate-final-URL skips, discovery
+counts) is appended to three additional tables, kept separate so older
+databases without them remain fully readable by `cspeek report`:
+
+```sql
+CREATE TABLE IF NOT EXISTS scan_skipped_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source_url TEXT
+);
+CREATE TABLE IF NOT EXISTS scan_duplicate_final_urls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    input_url TEXT NOT NULL,
+    final_url TEXT NOT NULL,
+    duplicate_of TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scan_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    discovered_url_count INTEGER NOT NULL,
+    skipped_link_count INTEGER NOT NULL,
+    crawl_limit_reached INTEGER NOT NULL,
+    crawl_limit_reasons TEXT            -- JSON array of strings
 );
 ```
 
@@ -307,11 +440,19 @@ The total maps to a risk level:
 matching browser behaviour. The first occurrence of a duplicated directive
 wins.
 
+HTTP/status issues (non-2xx/3xx responses, fetch errors, redirect loops)
+never contribute to this score: they are operational scan/report data,
+surfaced separately by `cspeek report` (see "Status issues are not CSP
+findings" above), not CSP configuration findings.
+
 ## Discovery bounds
 
 - **Crawling** (`--crawl`) is breadth-first, same-origin by default,
   bounded by `--max-depth` and `--max-urls`, obeys the per-request
-  timeout, and never revisits a URL.
+  timeout, and never revisits a URL. Cross-origin links (when
+  `--allow-cross-origin` is not set), non-http(s) links, and links beyond
+  the depth/URL bounds are recorded as skipped rather than silently
+  dropped — see "Crawl scope visibility" above.
 - **Subdomain discovery** (`--enumerate-subdomains`) resolves a fixed
   wordlist of ~20 common labels (`www`, `api`, `dev`, ...) via a single
   DNS lookup each. It performs no zone transfers, brute forcing, or
