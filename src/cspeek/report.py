@@ -11,7 +11,21 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import Assessment, Finding, FetchResult, ScanReport, ScanResult
+from .models import (
+    Assessment,
+    Finding,
+    FetchResult,
+    HighRiskURL,
+    PolicyGroup,
+    RemediationTheme,
+    ScanReport,
+    ScanResult,
+)
+
+# Bounds keep report output deterministic and readable regardless of how
+# many URLs were scanned; they do not affect the underlying counts.
+MAX_HIGH_RISK_URLS = 10
+MAX_EXAMPLE_URLS = 5
 
 
 class ReportError(ValueError):
@@ -81,6 +95,90 @@ def load_sqlite_report(path: str) -> list[ScanResult]:
     return [_row_to_scan_result(row) for row in rows]
 
 
+def _result_url(result: ScanResult) -> str:
+    """The URL a result should be reported under (post-redirect when known)."""
+    return result.fetch.final_url or result.fetch.input_url
+
+
+def _highest_risk_urls(results: list[ScanResult]) -> list[HighRiskURL]:
+    scored = [
+        HighRiskURL(
+            url=_result_url(r), score=r.assessment.score, level=r.assessment.level,
+        )
+        for r in results
+        if r.assessment is not None
+    ]
+    scored.sort(key=lambda h: (-h.score, h.url))
+    return scored[:MAX_HIGH_RISK_URLS]
+
+
+def _repeated_policies(results: list[ScanResult]) -> list[PolicyGroup]:
+    """Group results sharing an identical (exact-string) CSP header value.
+
+    This is deliberately exact-string matching, not semantic CSP
+    normalisation: two policies that are equivalent but written differently
+    (whitespace, directive order, etc.) are treated as distinct groups.
+    """
+    groups: dict[str, list[ScanResult]] = {}
+    for result in results:
+        csp = result.fetch.csp
+        if csp is None:
+            continue
+        groups.setdefault(csp, []).append(result)
+
+    policy_groups: list[PolicyGroup] = []
+    for csp, members in groups.items():
+        if len(members) < 2:
+            continue
+        urls = sorted(_result_url(m) for m in members)
+        rule_ids = sorted({
+            f.rule_id
+            for m in members
+            if m.assessment is not None
+            for f in m.assessment.findings
+        })
+        representative = next(
+            (m.assessment for m in members if m.assessment is not None), None
+        )
+        policy_groups.append(PolicyGroup(
+            csp=csp,
+            count=len(members),
+            score=representative.score if representative else None,
+            level=representative.level if representative else None,
+            rule_ids=rule_ids,
+            example_urls=urls[:MAX_EXAMPLE_URLS],
+        ))
+    policy_groups.sort(key=lambda g: (-g.count, g.csp))
+    return policy_groups
+
+
+def _remediation_themes(results: list[ScanResult]) -> list[RemediationTheme]:
+    """Group findings by remediation text across every affected URL."""
+    remediation_rule_ids: dict[str, set[str]] = {}
+    remediation_urls: dict[str, set[str]] = {}
+    for result in results:
+        if result.assessment is None:
+            continue
+        url = _result_url(result)
+        for finding in result.assessment.findings:
+            remediation_rule_ids.setdefault(finding.remediation, set()).add(
+                finding.rule_id
+            )
+            remediation_urls.setdefault(finding.remediation, set()).add(url)
+
+    themes = [
+        RemediationTheme(
+            remediation=remediation,
+            rule_ids=sorted(remediation_rule_ids[remediation]),
+            affected_url_count=len(urls),
+            example_urls=sorted(urls)[:MAX_EXAMPLE_URLS],
+        )
+        for remediation, urls in remediation_urls.items()
+    ]
+    themes.sort(key=lambda t: (-t.affected_url_count, t.remediation))
+    return themes
+
+
 def summarise(results: list[ScanResult]) -> ScanReport:
     """Aggregate scan results into a :class:`ScanReport` summary."""
     total = len(results)
@@ -89,13 +187,16 @@ def summarise(results: list[ScanResult]) -> ScanReport:
 
     level_counts: dict[str, int] = {}
     rule_counts: dict[str, int] = {}
+    rule_affected_urls: dict[str, set[str]] = {}
     for result in results:
         if result.assessment is None:
             continue
         level = result.assessment.level
         level_counts[level] = level_counts.get(level, 0) + 1
+        url = _result_url(result)
         for finding in result.assessment.findings:
             rule_counts[finding.rule_id] = rule_counts.get(finding.rule_id, 0) + 1
+            rule_affected_urls.setdefault(finding.rule_id, set()).add(url)
 
     return ScanReport(
         total=total,
@@ -104,6 +205,12 @@ def summarise(results: list[ScanResult]) -> ScanReport:
         errors=errors,
         level_counts=level_counts,
         rule_counts=rule_counts,
+        rule_affected_urls={
+            rule_id: sorted(urls) for rule_id, urls in rule_affected_urls.items()
+        },
+        highest_risk_urls=_highest_risk_urls(results),
+        repeated_policies=_repeated_policies(results),
+        remediation_themes=_remediation_themes(results),
         results=results,
     )
 
@@ -112,19 +219,65 @@ def render_report_screen(report: ScanReport) -> str:
     """Human-readable summary of a :class:`ScanReport`."""
     lines: list[str] = []
     lines.append("=" * 72)
+    lines.append("Summary")
     lines.append(f"Total scanned:  {report.total}")
     lines.append(f"With CSP:       {report.with_csp}")
     lines.append(f"Without CSP:    {report.without_csp}")
     lines.append(f"Fetch errors:   {report.errors}")
+
     if report.level_counts:
+        lines.append("-" * 72)
         lines.append("Risk levels:")
         for level in ("critical", "high", "medium", "low"):
             if level in report.level_counts:
                 lines.append(f"  - {level}: {report.level_counts[level]}")
+
     if report.rule_counts:
-        lines.append("Findings by rule:")
+        lines.append("-" * 72)
+        lines.append("Top findings (by rule ID):")
         for rule_id in sorted(report.rule_counts):
-            lines.append(f"  - {rule_id}: {report.rule_counts[rule_id]}")
+            affected = report.rule_affected_urls.get(rule_id, [])
+            lines.append(
+                f"  - {rule_id}: {report.rule_counts[rule_id]} finding(s) "
+                f"across {len(affected)} URL(s)"
+            )
+
+    if report.highest_risk_urls:
+        lines.append("-" * 72)
+        lines.append("Highest-risk URLs:")
+        for entry in report.highest_risk_urls:
+            lines.append(
+                f"  - {entry.url}: {entry.level.upper()} (score {entry.score})"
+            )
+
+    if report.repeated_policies:
+        lines.append("-" * 72)
+        lines.append("Repeated CSP policies:")
+        for group in report.repeated_policies:
+            level = f"{group.level.upper()} (score {group.score})" if group.level else "n/a"
+            lines.append(f"  - shared by {group.count} URLs, risk {level}")
+            lines.append(f"    CSP: {group.csp}")
+            if group.rule_ids:
+                lines.append(f"    Findings: {', '.join(group.rule_ids)}")
+            lines.append(f"    Examples: {', '.join(group.example_urls)}")
+
+    if report.remediation_themes:
+        lines.append("-" * 72)
+        lines.append("Remediation themes:")
+        for theme in report.remediation_themes:
+            lines.append(
+                f"  - {theme.remediation} "
+                f"(affects {theme.affected_url_count} URL(s); "
+                f"rules {', '.join(theme.rule_ids)})"
+            )
+
+    if report.errors:
+        lines.append("-" * 72)
+        lines.append("Fetch error details:")
+        for result in report.results:
+            if result.fetch.error:
+                lines.append(f"  - {result.fetch.input_url}: {result.fetch.error}")
+
     lines.append("=" * 72)
     return "\n".join(lines)
 

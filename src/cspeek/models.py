@@ -62,6 +62,34 @@ class ScanResult(BaseModel):
     scan_timestamp: str
 
 
+class HighRiskURL(BaseModel):
+    """One URL surfaced in the highest-risk ranking."""
+
+    url: str
+    score: int
+    level: str
+
+
+class PolicyGroup(BaseModel):
+    """A distinct CSP header value shared verbatim by one or more URLs."""
+
+    csp: str
+    count: int
+    score: int | None = None
+    level: str | None = None
+    rule_ids: list[str] = Field(default_factory=list)
+    example_urls: list[str] = Field(default_factory=list)
+
+
+class RemediationTheme(BaseModel):
+    """One remediation grouped across every finding that recommends it."""
+
+    remediation: str
+    rule_ids: list[str] = Field(default_factory=list)
+    affected_url_count: int = 0
+    example_urls: list[str] = Field(default_factory=list)
+
+
 class ScanReport(BaseModel):
     """Summary of a set of scan results, produced by ``cspeek report``.
 
@@ -74,4 +102,8 @@ class ScanReport(BaseModel):
     errors: int
     level_counts: dict[str, int] = Field(default_factory=dict)
     rule_counts: dict[str, int] = Field(default_factory=dict)
+    rule_affected_urls: dict[str, list[str]] = Field(default_factory=dict)
+    highest_risk_urls: list[HighRiskURL] = Field(default_factory=list)
+    repeated_policies: list[PolicyGroup] = Field(default_factory=list)
+    remediation_themes: list[RemediationTheme] = Field(default_factory=list)
     results: list[ScanResult] = Field(default_factory=list)
