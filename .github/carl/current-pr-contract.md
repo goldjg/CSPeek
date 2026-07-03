@@ -81,5 +81,7 @@ active
 - Any need to alter LICENSE or repository structure beyond scope.
 
 ## Context reset notes
-Close this contract when the scanner, tests, docs, and durable artefact
-updates are merged.
+Implementation complete: scanner, CLI, 52 mocked-HTTP tests, README, and
+durable artefact updates are done. Close this contract on merge. Follow-up
+candidates are recorded under "Open questions" in memory.md (multi-header
+CSP merging, meta-tag CSP, strict-dynamic modelling).
