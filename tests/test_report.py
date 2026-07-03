@@ -10,17 +10,20 @@ from pathlib import Path
 from unittest import mock
 
 from cspeek import cli
+from cspeek.models import DuplicateFinalUrl, ScanMetadata, SkippedLink
 from cspeek.output import write_json, write_sqlite
 from cspeek.report import (
     ReportError,
     load_json_report,
+    load_json_report_full,
     load_sqlite_report,
+    load_sqlite_report_full,
     render_report_screen,
     summarise,
 )
-from cspeek.scanner import scan_targets
+from cspeek.scanner import scan_targets, scan_targets_with_metadata
 
-from tests.fakes import FakeFetcher, html_response
+from tests.fakes import FakeFetcher, html_response, redirect_response
 
 
 def sample_results():
@@ -284,7 +287,7 @@ class ReportCliTests(unittest.TestCase):
             path = Path(tmp) / "out.json"
             write_json(sample_results(), str(path))
 
-            with mock.patch.object(cli, "scan_targets") as scan_mock:
+            with mock.patch.object(cli, "scan_targets_with_metadata") as scan_mock:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     code = cli.main(["report", "--json", str(path)])
@@ -313,6 +316,212 @@ class ReportCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             cli.main(["report", "--json", "/nonexistent/path.json"])
         self.assertEqual(ctx.exception.code, 2)
+
+
+def sample_results_with_status_issues():
+    """A mix of success, non-2xx/3xx status, and fetch-error results."""
+    fetcher = FakeFetcher({
+        "https://ok.test": html_response(csp="default-src 'self'"),
+        "https://missing.test": html_response(status=404),
+        "https://broken.test": html_response(status=500),
+        # https://down.test is unregistered -> connection error.
+    })
+    return scan_targets(
+        ["https://ok.test", "https://missing.test", "https://broken.test",
+         "https://down.test"],
+        fetcher=fetcher,
+    )
+
+
+class StatusIssueReportTests(unittest.TestCase):
+    def test_report_includes_status_code_counts(self):
+        report = summarise(sample_results_with_status_issues())
+        self.assertEqual(report.status_code_counts.get("200"), 1)
+        self.assertEqual(report.status_code_counts.get("404"), 1)
+        self.assertEqual(report.status_code_counts.get("500"), 1)
+
+    def test_report_includes_non_success_urls(self):
+        report = summarise(sample_results_with_status_issues())
+        self.assertEqual(report.non_success_count, 3)
+        urls_and_types = {(i.url, i.issue_type) for i in report.non_success_urls}
+        self.assertIn(("https://missing.test", "http-status"), urls_and_types)
+        self.assertIn(("https://broken.test", "http-status"), urls_and_types)
+        self.assertIn(("https://down.test", "fetch-error"), urls_and_types)
+
+    def test_status_issues_are_separate_from_csp_findings(self):
+        """Status/fetch issues never appear in rule_counts (CSP scoring)."""
+        report = summarise(sample_results_with_status_issues())
+        # rule_counts only reflects CSP-scoring rule IDs.
+        self.assertTrue(all(rid.startswith("CSP-") for rid in report.rule_counts))
+
+    def test_screen_shows_http_status_summary_and_non_success_urls(self):
+        report = summarise(sample_results_with_status_issues())
+        text = render_report_screen(report)
+        self.assertIn("HTTP status summary:", text)
+        self.assertIn("404: 1 URL(s)", text)
+        self.assertIn("Non-success URLs", text)
+        self.assertIn("https://missing.test", text)
+        self.assertIn("https://down.test", text)
+
+    def test_screen_omits_status_sections_when_all_success(self):
+        report = summarise(sample_results())
+        text = render_report_screen(report)
+        self.assertNotIn("Non-success URLs", text)
+
+
+class DuplicateFinalUrlReportTests(unittest.TestCase):
+    def test_summarise_surfaces_duplicate_final_urls_from_metadata(self):
+        results = sample_results()
+        metadata = ScanMetadata(
+            duplicate_final_urls=[
+                DuplicateFinalUrl(
+                    input_url="https://www.a.test",
+                    final_url="https://a.test",
+                    duplicate_of="https://a.test",
+                ),
+            ],
+        )
+        report = summarise(results, metadata=metadata)
+        self.assertEqual(len(report.duplicate_final_urls), 1)
+        text = render_report_screen(report)
+        self.assertIn("Duplicate final URL skips:", text)
+        self.assertIn("https://www.a.test", text)
+
+    def test_screen_omits_duplicate_section_when_none(self):
+        report = summarise(sample_results())
+        text = render_report_screen(report)
+        self.assertNotIn("Duplicate final URL skips:", text)
+
+    def test_scan_then_report_round_trips_duplicate_final_urls(self):
+        """End-to-end: scan output (JSON) -> report includes the dedupe skip."""
+        fetcher = FakeFetcher({
+            "https://a.test/": html_response(csp="default-src 'self'"),
+            "https://www.a.test/": redirect_response("https://a.test/"),
+        })
+        results, metadata = scan_targets_with_metadata(
+            ["https://a.test/", "https://www.a.test/"], fetcher=fetcher,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "out.json"
+            write_json(results, str(path), metadata=metadata)
+            loaded_results, loaded_metadata = load_json_report_full(str(path))
+        report = summarise(loaded_results, metadata=loaded_metadata)
+        self.assertEqual(len(report.duplicate_final_urls), 1)
+        self.assertEqual(
+            report.duplicate_final_urls[0].input_url, "https://www.a.test/"
+        )
+
+
+class SkippedLinkReportTests(unittest.TestCase):
+    def test_summarise_surfaces_skipped_links_from_metadata(self):
+        metadata = ScanMetadata(
+            skipped_links=[
+                SkippedLink(
+                    url="https://evil.test/", reason="cross-origin-not-allowed",
+                    source_url="https://a.test/",
+                ),
+            ],
+            skipped_link_count=1,
+            discovered_url_count=2,
+        )
+        report = summarise(sample_results(), metadata=metadata)
+        text = render_report_screen(report)
+        self.assertIn("Skipped out-of-scope links", text)
+        self.assertIn("https://evil.test/", text)
+        self.assertIn("Crawl/discovery notes:", text)
+        self.assertIn("discovered URLs: 2", text)
+
+    def test_screen_omits_skipped_link_section_when_none(self):
+        report = summarise(sample_results())
+        text = render_report_screen(report)
+        self.assertNotIn("Skipped out-of-scope links", text)
+        self.assertNotIn("Crawl/discovery notes:", text)
+
+    def test_crawl_limit_reached_is_shown_when_present(self):
+        metadata = ScanMetadata(
+            discovered_url_count=1,
+            crawl_limit_reached=True,
+            crawl_limit_reasons=["max-urls (5) reached"],
+        )
+        report = summarise(sample_results(), metadata=metadata)
+        text = render_report_screen(report)
+        self.assertIn("crawl limit reached: max-urls (5) reached", text)
+
+
+class ReportBackwardCompatibilityTests(unittest.TestCase):
+    def test_load_json_report_full_handles_legacy_bare_array(self):
+        """Older scan JSON (a bare array) still loads with empty metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.json"
+            write_json(sample_results(), str(path))  # no metadata argument
+            results, metadata = load_json_report_full(str(path))
+        self.assertEqual(len(results), 3)
+        self.assertEqual(metadata, ScanMetadata())
+
+    def test_load_json_report_full_reads_new_object_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "new.json"
+            _, metadata_in = scan_targets_with_metadata(
+                ["https://a.test", "https://b.test"],
+                fetcher=FakeFetcher({
+                    "https://a.test": html_response(),
+                    "https://b.test": html_response(),
+                }),
+            )
+            write_json(sample_results(), str(path), metadata=metadata_in)
+            results, metadata_out = load_json_report_full(str(path))
+        self.assertEqual(len(results), 3)
+        self.assertEqual(metadata_out.discovered_url_count, 2)
+
+    def test_load_sqlite_report_full_handles_legacy_database(self):
+        """A SQLite DB written before metadata tables existed still loads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            write_sqlite(sample_results(), str(path))  # no metadata argument
+            results, metadata = load_sqlite_report_full(str(path))
+        self.assertEqual(len(results), 3)
+        self.assertEqual(metadata.duplicate_final_urls, [])
+        self.assertFalse(metadata.crawl_limit_reached)
+
+    def test_report_reads_older_json_and_summarises_successfully(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.json"
+            write_json(sample_results(), str(path))
+            code = cli.main(["report", "--json", str(path), "--quiet"])
+        self.assertEqual(code, 0)
+
+
+class ReportJsonNewFieldsTests(unittest.TestCase):
+    def test_json_summary_includes_status_and_metadata_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "out.json"
+            dest = Path(tmp) / "summary.json"
+            write_json(sample_results_with_status_issues(), str(src))
+            code = cli.main(
+                ["report", "--json", str(src), "--output", str(dest), "--quiet"]
+            )
+            self.assertEqual(code, 0)
+            summary = json.loads(dest.read_text())
+        for key in (
+            "status_code_counts", "non_success_urls", "non_success_count",
+            "discovered_url_count", "skipped_links", "skipped_link_count",
+            "crawl_limit_reached", "crawl_limit_reasons", "duplicate_final_urls",
+        ):
+            self.assertIn(key, summary)
+        self.assertEqual(summary["status_code_counts"]["404"], 1)
+        self.assertEqual(summary["non_success_count"], 3)
+
+    def test_json_summary_with_metadata_is_deterministic(self):
+        results = sample_results_with_status_issues()
+        metadata = ScanMetadata(
+            skipped_links=[
+                SkippedLink(url="https://x.test/", reason="non-http-scheme"),
+            ],
+            skipped_link_count=1,
+        )
+        first = summarise(results, metadata=metadata).model_dump_json()
+        second = summarise(results, metadata=metadata).model_dump_json()
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

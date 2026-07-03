@@ -14,13 +14,13 @@ from .inputs import InputError, load_targets
 from .output import render_screen, write_csv, write_json, write_sqlite
 from .report import (
     ReportError,
-    load_json_report,
-    load_sqlite_report,
+    load_json_report_full,
+    load_sqlite_report_full,
     render_report_screen,
     summarise,
     write_report_json,
 )
-from .scanner import scan_targets
+from .scanner import scan_targets_with_metadata
 
 EPILOG = (
     "CSPeek is a defensive configuration-auditing tool. Only scan URLs "
@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
             return 2  # unreachable; parser.error exits
 
-        results = scan_targets(
+        results, metadata = scan_targets_with_metadata(
             targets,
             timeout=args.timeout,
             do_crawl=args.crawl,
@@ -125,11 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.json:
-            write_json(results, args.json)
+            write_json(results, args.json, metadata=metadata)
         if args.csv:
             write_csv(results, args.csv)
         if args.sqlite:
-            write_sqlite(results, args.sqlite)
+            write_sqlite(results, args.sqlite, metadata=metadata)
         if not args.quiet:
             print(render_screen(results))
 
@@ -139,14 +139,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "report":
         try:
             if args.json:
-                results = load_json_report(args.json)
+                results, metadata = load_json_report_full(args.json)
             else:
-                results = load_sqlite_report(args.sqlite)
+                results, metadata = load_sqlite_report_full(args.sqlite)
         except ReportError as exc:
             parser.error(str(exc))
             return 2  # unreachable; parser.error exits
 
-        report = summarise(results)
+        report = summarise(results, metadata=metadata)
         if args.output:
             write_report_json(report, args.output)
         if not args.quiet:
