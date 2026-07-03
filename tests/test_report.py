@@ -37,6 +37,30 @@ def sample_results():
     )
 
 
+def sample_results_with_duplicates():
+    """Four fetchable targets plus one that errors.
+
+    ``a`` and ``b`` share an identical CSP string (the repeated-policy
+    case); ``c`` is fully hardened and unique; ``d`` has no CSP at all;
+    ``e`` is unreachable (fetch error, no assessment).
+    """
+    shared_csp = "default-src *"
+    fetcher = FakeFetcher({
+        "https://a.test": html_response(csp=shared_csp),
+        "https://b.test": html_response(csp=shared_csp),
+        "https://c.test": html_response(
+            csp="default-src 'none'; script-src 'self'; object-src 'none'; "
+                "base-uri 'none'; frame-ancestors 'none'"
+        ),
+        "https://d.test": html_response(),  # no CSP at all
+    })
+    return scan_targets(
+        ["https://a.test", "https://b.test", "https://c.test", "https://d.test",
+         "https://e.test"],
+        fetcher=fetcher,
+    )
+
+
 class ReportLoadingTests(unittest.TestCase):
     def setUp(self):
         self.results = sample_results()
@@ -102,6 +126,156 @@ class SummariseTests(unittest.TestCase):
         self.assertIn("Total scanned:  3", text)
         self.assertIn("With CSP:       2", text)
         self.assertIn("Risk levels:", text)
+
+    def test_summarise_counts_fetch_errors(self):
+        report = summarise(sample_results_with_duplicates())
+        self.assertEqual(report.total, 5)
+        self.assertEqual(report.errors, 1)
+
+    def test_summarise_from_sqlite_loaded_results_includes_new_fields(self):
+        """Backwards compatibility: SQLite-loaded results still aggregate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "out.db"
+            write_sqlite(sample_results_with_duplicates(), str(path))
+            loaded = load_sqlite_report(str(path))
+        report = summarise(loaded)
+        self.assertEqual(report.total, 5)
+        self.assertEqual(len(report.repeated_policies), 1)
+        self.assertTrue(report.highest_risk_urls)
+        self.assertTrue(report.remediation_themes)
+
+
+class RepeatedPolicyGroupingTests(unittest.TestCase):
+    def test_identical_csp_strings_are_grouped(self):
+        report = summarise(sample_results_with_duplicates())
+        self.assertEqual(len(report.repeated_policies), 1)
+        group = report.repeated_policies[0]
+        self.assertEqual(group.csp, "default-src *")
+        self.assertEqual(group.count, 2)
+        self.assertEqual(group.example_urls, ["https://a.test", "https://b.test"])
+        self.assertIsNotNone(group.level)
+        self.assertIn("CSP-020", group.rule_ids)
+
+    def test_unique_policies_are_not_reported_as_repeated(self):
+        report = summarise(sample_results_with_duplicates())
+        csps = [g.csp for g in report.repeated_policies]
+        self.assertNotIn(
+            "default-src 'none'; script-src 'self'; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+            csps,
+        )
+
+    def test_no_repeated_policies_when_all_distinct(self):
+        report = summarise(sample_results())
+        self.assertEqual(report.repeated_policies, [])
+
+    def test_repeated_policy_grouping_is_exact_string_match(self):
+        """Equivalent-but-differently-formatted policies are NOT merged."""
+        fetcher = FakeFetcher({
+            "https://a.test": html_response(csp="default-src 'self'"),
+            "https://b.test": html_response(csp="default-src  'self'"),
+        })
+        results = scan_targets(
+            ["https://a.test", "https://b.test"], fetcher=fetcher
+        )
+        report = summarise(results)
+        self.assertEqual(report.repeated_policies, [])
+
+
+class HighestRiskUrlTests(unittest.TestCase):
+    def test_highest_risk_urls_sorted_descending_by_score(self):
+        report = summarise(sample_results_with_duplicates())
+        scores = [u.score for u in report.highest_risk_urls]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_highest_risk_urls_excludes_errored_targets(self):
+        report = summarise(sample_results_with_duplicates())
+        urls = [u.url for u in report.highest_risk_urls]
+        self.assertNotIn("https://e.test", urls)
+
+    def test_highest_risk_urls_includes_level(self):
+        report = summarise(sample_results_with_duplicates())
+        top = report.highest_risk_urls[0]
+        self.assertIn(top.level, ("low", "medium", "high", "critical"))
+
+
+class AffectedUrlsPerRuleTests(unittest.TestCase):
+    def test_rule_affected_urls_lists_every_matching_url(self):
+        report = summarise(sample_results_with_duplicates())
+        # CSP-020 (wildcard source) applies to a.test and b.test.
+        affected = report.rule_affected_urls.get("CSP-020", [])
+        self.assertEqual(affected, ["https://a.test", "https://b.test"])
+
+    def test_rule_affected_urls_covers_missing_csp_rule(self):
+        report = summarise(sample_results_with_duplicates())
+        affected = report.rule_affected_urls.get("CSP-001", [])
+        self.assertEqual(affected, ["https://d.test"])
+
+
+class RemediationThemeTests(unittest.TestCase):
+    def test_remediation_themes_group_by_remediation_text(self):
+        report = summarise(sample_results_with_duplicates())
+        remediations = {t.remediation: t for t in report.remediation_themes}
+        wildcard_fix = "Replace '*' with an explicit allow-list of required origins."
+        self.assertIn(wildcard_fix, remediations)
+        theme = remediations[wildcard_fix]
+        self.assertEqual(theme.affected_url_count, 2)
+        self.assertEqual(theme.example_urls, ["https://a.test", "https://b.test"])
+        self.assertIn("CSP-020", theme.rule_ids)
+
+    def test_remediation_themes_sorted_by_affected_count_desc(self):
+        report = summarise(sample_results_with_duplicates())
+        counts = [t.affected_url_count for t in report.remediation_themes]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+
+
+class HumanReadableReportSectionsTests(unittest.TestCase):
+    def test_screen_includes_all_new_sections(self):
+        report = summarise(sample_results_with_duplicates())
+        text = render_report_screen(report)
+        self.assertIn("Summary", text)
+        self.assertIn("Top findings (by rule ID):", text)
+        self.assertIn("Highest-risk URLs:", text)
+        self.assertIn("Repeated CSP policies:", text)
+        self.assertIn("Remediation themes:", text)
+        self.assertIn("Fetch error details:", text)
+        self.assertIn("https://e.test", text)
+
+    def test_screen_omits_repeated_policies_section_when_none(self):
+        report = summarise(sample_results())
+        text = render_report_screen(report)
+        self.assertNotIn("Repeated CSP policies:", text)
+
+    def test_screen_omits_fetch_errors_section_when_none(self):
+        report = summarise(sample_results())
+        text = render_report_screen(report)
+        self.assertNotIn("Fetch error details:", text)
+
+
+class ReportJsonShapeTests(unittest.TestCase):
+    def test_json_summary_includes_new_structured_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "out.json"
+            dest = Path(tmp) / "summary.json"
+            write_json(sample_results_with_duplicates(), str(src))
+            code = cli.main(
+                ["report", "--json", str(src), "--output", str(dest), "--quiet"]
+            )
+            self.assertEqual(code, 0)
+            summary = json.loads(dest.read_text())
+        for key in (
+            "rule_affected_urls", "highest_risk_urls", "repeated_policies",
+            "remediation_themes",
+        ):
+            self.assertIn(key, summary)
+        self.assertEqual(len(summary["repeated_policies"]), 1)
+        self.assertEqual(summary["repeated_policies"][0]["count"], 2)
+
+    def test_json_summary_is_deterministic_across_runs(self):
+        results = sample_results_with_duplicates()
+        first = summarise(results).model_dump_json()
+        second = summarise(results).model_dump_json()
+        self.assertEqual(first, second)
 
 
 class ReportCliTests(unittest.TestCase):

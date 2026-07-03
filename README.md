@@ -93,8 +93,62 @@ Flags for `cspeek report`:
 | `--quiet` | off | Suppress the human-readable summary on stdout |
 
 `cspeek report` never issues network requests; it only reads a previously
-written `cspeek scan` output and aggregates it into a summary (totals,
-CSP presence, risk-level distribution, and finding counts by rule).
+written `cspeek scan` output (JSON file or SQLite `scans` table) and
+aggregates it into a human-facing findings summary: totals, CSP presence,
+fetch errors, risk-level distribution, findings by rule (with affected
+URLs), highest-risk URLs, repeated/equivalent CSP policies, and
+remediation themes grouped across findings. It never rescans a target,
+so it is safe to run repeatedly against the same scan output.
+
+### Repeated CSP policy grouping
+
+Many sites serve an identical CSP across every page (a shared template,
+CDN edge config, or framework default). `cspeek report` groups scanned
+URLs that share the *exact same* `Content-Security-Policy` header string
+and reports, per group: how many URLs share it, its risk score/level, the
+rule IDs it triggers, and a handful of example URLs.
+
+This grouping is deliberately exact-string matching, not semantic CSP
+normalisation: `default-src 'self'` and `default-src  'self'` (extra
+whitespace) or a policy with directives in a different order are treated
+as distinct groups. Only groups with two or more URLs are reported as
+"repeated" (a policy used by exactly one URL is not a duplicate).
+
+### Example human-readable summary
+
+```
+========================================================================
+Summary
+Total scanned:  5
+With CSP:       3
+Without CSP:    2
+Fetch errors:   1
+------------------------------------------------------------------------
+Risk levels:
+  - critical: 3
+  - low: 1
+------------------------------------------------------------------------
+Top findings (by rule ID):
+  - CSP-020: 2 finding(s) across 2 URL(s)
+  - CSP-041: 2 finding(s) across 2 URL(s)
+------------------------------------------------------------------------
+Highest-risk URLs:
+  - https://a.example: CRITICAL (score 60)
+  - https://b.example: CRITICAL (score 60)
+------------------------------------------------------------------------
+Repeated CSP policies:
+  - shared by 2 URLs, risk CRITICAL (score 60)
+    CSP: default-src *
+    Findings: CSP-020, CSP-041, CSP-042
+    Examples: https://a.example, https://b.example
+------------------------------------------------------------------------
+Remediation themes:
+  - Replace '*' with an explicit allow-list of required origins. (affects 2 URL(s); rules CSP-020)
+------------------------------------------------------------------------
+Fetch error details:
+  - https://e.example: OSError: connection refused
+========================================================================
+```
 
 Exit code is `0` on success, `1` if any target had a fetch error (`scan`
 only), `2` for usage errors.
@@ -136,6 +190,52 @@ An array of result objects:
   }
 ]
 ```
+
+### `cspeek report --output` JSON summary
+
+`cspeek report --json results.json --output summary.json` writes a
+`ScanReport` object (brief shape shown; see `src/cspeek/models.py` for
+the full schema):
+
+```json
+{
+  "total": 5,
+  "with_csp": 3,
+  "without_csp": 2,
+  "errors": 1,
+  "level_counts": {"critical": 3, "low": 1},
+  "rule_counts": {"CSP-020": 2, "CSP-041": 2},
+  "rule_affected_urls": {"CSP-020": ["https://a.example", "https://b.example"]},
+  "highest_risk_urls": [
+    {"url": "https://a.example", "score": 60, "level": "critical"}
+  ],
+  "repeated_policies": [
+    {
+      "csp": "default-src *",
+      "count": 2,
+      "score": 60,
+      "level": "critical",
+      "rule_ids": ["CSP-020", "CSP-041", "CSP-042"],
+      "example_urls": ["https://a.example", "https://b.example"]
+    }
+  ],
+  "remediation_themes": [
+    {
+      "remediation": "Replace '*' with an explicit allow-list of required origins.",
+      "rule_ids": ["CSP-020"],
+      "affected_url_count": 2,
+      "example_urls": ["https://a.example", "https://b.example"]
+    }
+  ],
+  "results": ["... full per-URL ScanResult objects ..."]
+}
+```
+
+`highest_risk_urls` and example-URL lists in `repeated_policies` /
+`remediation_themes` are capped (10 and 5 entries respectively) so the
+summary stays readable regardless of scan size; the underlying counts
+(`count`, `affected_url_count`, `rule_counts`) are never truncated.
+
 
 ### CSV
 

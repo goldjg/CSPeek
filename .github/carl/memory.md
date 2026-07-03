@@ -217,9 +217,19 @@ The active authority order is:
   explicit approval.
 - `cspeek report --json PATH|--sqlite PATH [--output PATH] [--quiet]`
   reconstructs typed models from a prior `cspeek scan` JSON file or
-  SQLite `scans` table and aggregates counts (total, with/without CSP,
-  fetch errors, risk-level distribution, findings-by-rule) into a
-  `ScanReport`. It performs no network I/O and never rescans targets.
+  SQLite `scans` table and aggregates them into a `ScanReport`: totals,
+  CSP presence, fetch errors, risk-level distribution, findings-by-rule
+  (with affected URLs per rule), highest-risk URLs (score-descending,
+  capped), repeated/equivalent CSP policy groups, and remediation themes
+  grouped by remediation text. It performs no network I/O and never
+  rescans targets.
+- Repeated CSP policy grouping in `cspeek report` is exact-string
+  matching on the raw `Content-Security-Policy` header value (see
+  `_repeated_policies` in `src/cspeek/report.py`), deliberately not
+  semantic CSP normalisation; only groups of 2+ URLs are reported.
+  `highest_risk_urls` is capped at 10 entries and example-URL lists in
+  `repeated_policies`/`remediation_themes` at 5, to keep report output
+  readable; the underlying counts are never truncated.
 - Risk model: fixed per-severity scores (low 5, medium 10, high 20,
   critical 40); level thresholds 0/15/25/40 for low/medium/high/critical;
   rules CSP-001..CSP-043 documented in README. Determinism is a contract
@@ -239,7 +249,11 @@ The active authority order is:
   intersection semantics) rather than first-value-wins?
 - Should `<meta http-equiv>` CSP declarations be inspected in a future PR?
 - Should `strict-dynamic` interactions be modelled in the rule set?
+- Should repeated-policy grouping eventually support semantic CSP
+  normalisation (e.g. whitespace/order-insensitive comparison) as an
+  opt-in mode, while keeping exact-string matching as the default?
 
 ## Last updated
-2026-07-03 by CSPeek CLI packaging refactor PR (src/cspeek, pyproject.toml,
-Pydantic models, `cspeek report`)
+2026-07-03 by CSPeek `cspeek report` findings-aggregation PR (repeated
+CSP policy grouping, highest-risk URLs, affected URLs per rule,
+remediation themes, expanded screen/JSON report output).
