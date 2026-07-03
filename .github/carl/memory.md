@@ -242,6 +242,44 @@ The active authority order is:
   lookup per candidate, no active scanning.
 - Framing is strictly defensive configuration auditing for authorised
   targets; offensive features are forbidden scope.
+- **Final URL dedupe**: `scan_targets_with_metadata()` in
+  `src/cspeek/scanner.py` deduplicates fetch results by `final_url`
+  after fetch (across multiple inputs, crawling, and subdomain
+  enumeration): the first successful fetch to reach a given final URL is
+  kept in the main results; later inputs resolving to the same final URL
+  are recorded as `DuplicateFinalUrl` skips (input/final/duplicate-of),
+  not silently dropped. Fetch errors are never deduplicated this way
+  (a final URL may not be meaningfully known on failure), so every error
+  result is always kept. `scan_targets()` remains a thin wrapper that
+  discards the metadata for callers that only need results (backward
+  compatible).
+- **Crawl scope visibility**: `crawl_with_scope()` in
+  `src/cspeek/discovery.py` (the original `crawl()` is now a thin
+  wrapper) records, in addition to fetched pages: every discovered URL,
+  every link skipped as `cross-origin-not-allowed` (same-origin is still
+  the default; `--allow-cross-origin` remains the opt-in to follow them
+  instead of skipping) or `non-http-scheme` (`mailto:`, `javascript:`,
+  etc.), and whether a `max-depth`/`max-urls` crawl limit was reached.
+  This is bookkeeping only — it does not change what gets fetched.
+- **Status issues are not CSP findings**: HTTP/status issues (non-2xx/3xx
+  status codes, fetch errors, redirect loops) are computed in
+  `report.py`'s `_status_issues()` purely from `FetchResult` data and
+  never influence `assess.py`'s deterministic CSP risk score. They are
+  reported separately in `ScanReport.status_code_counts` /
+  `non_success_urls` (report) as operational scan/report metadata.
+- `ScanMetadata` (discovered/skipped/duplicate-final-url/crawl-limit
+  data) is optional and backward compatible: `write_json`/`write_sqlite`
+  accept an optional `metadata` argument (scan JSON becomes
+  `{"results": [...], "metadata": {...}}` only when metadata is passed;
+  SQLite gets three additional append-only tables —
+  `scan_skipped_links`, `scan_duplicate_final_urls`, `scan_metadata`).
+  `cspeek report`'s `load_json_report_full`/`load_sqlite_report_full`
+  read both the legacy bare-array JSON / metadata-less SQLite and the
+  new shapes; `summarise()`'s `metadata` parameter defaults to an empty
+  `ScanMetadata()` so older scan output still summarises successfully.
+  The plain `load_json_report`/`load_sqlite_report`/`scan_targets`
+  functions remain as thin wrappers returning just the prior return
+  type, for callers that don't need metadata.
 
 ## Open questions
 
@@ -252,8 +290,13 @@ The active authority order is:
 - Should repeated-policy grouping eventually support semantic CSP
   normalisation (e.g. whitespace/order-insensitive comparison) as an
   opt-in mode, while keeping exact-string matching as the default?
+- Should crawl-scope skip visibility also report per-crawl (not just
+  per-scan-run aggregate) discovery data, e.g. when scanning many
+  targets with `--crawl` in one invocation?
 
 ## Last updated
-2026-07-03 by CSPeek `cspeek report` findings-aggregation PR (repeated
-CSP policy grouping, highest-risk URLs, affected URLs per rule,
-remediation themes, expanded screen/JSON report output).
+2026-07-03 by CSPeek scan/report transparency PR (final-URL dedupe after
+fetch, crawl-scope skip visibility with limit-reached reporting, HTTP
+status/fetch-error issues surfaced separately from CSP risk scoring in
+`cspeek report`, backward-compatible `ScanMetadata` in JSON/SQLite
+output).

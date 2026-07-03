@@ -1,4 +1,4 @@
-# version: 1.1.0
+# version: 1.2.0
 invariants:
   - id: no-hardcoded-secrets
     name: No hardcoded secrets
@@ -63,4 +63,14 @@ invariants:
   - id: repository-truth-over-session-memory
     name: Repository truth over session memory
     rule: Current repository state and canonical cARL artefacts must outrank stale prompt or session memory when they conflict.
+    severity: high
+
+  - id: status-issues-separate-from-csp-scoring
+    name: Status issues separate from CSP scoring
+    rule: HTTP/status issues (non-2xx/3xx codes, fetch errors, redirect loops) must never influence the deterministic CSP risk score; they are reported as separate operational scan/report metadata.
+    severity: high
+
+  - id: scan-output-backward-compatible
+    name: Scan output backward compatible
+    rule: New scan/report metadata (final-URL dedupe, crawl scope, discovery data) must be additive and optional; existing scan JSON/SQLite fields and older scan output must remain readable by cspeek report.
     severity: high
