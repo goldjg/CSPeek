@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from csp_scanner.scanner import scan_targets
+from cspeek.scanner import scan_targets
 
 from tests.fakes import FakeFetcher, html_response
 
@@ -28,7 +28,7 @@ class OutputTests(unittest.TestCase):
         self.dir = Path(self.tmp.name)
 
     def test_json_output(self):
-        from csp_scanner.output import write_json
+        from cspeek.output import write_json
 
         path = self.dir / "out.json"
         write_json(self.results, str(path))
@@ -45,7 +45,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(data[1]["risk_level"], "critical")
 
     def test_csv_output(self):
-        from csp_scanner.output import CSV_FIELDS, write_csv
+        from cspeek.output import CSV_FIELDS, write_csv
 
         path = self.dir / "out.csv"
         write_csv(self.results, str(path))
@@ -56,7 +56,7 @@ class OutputTests(unittest.TestCase):
         self.assertIn("CSP-020", rows[0]["findings"])
 
     def test_sqlite_output(self):
-        from csp_scanner.output import write_sqlite
+        from cspeek.output import write_sqlite
 
         path = self.dir / "out.db"
         write_sqlite(self.results, str(path))
@@ -81,7 +81,7 @@ class OutputTests(unittest.TestCase):
         self.assertTrue(ts)
 
     def test_sqlite_appends_to_existing_db(self):
-        from csp_scanner.output import write_sqlite
+        from cspeek.output import write_sqlite
 
         path = self.dir / "out.db"
         write_sqlite(self.results, str(path))

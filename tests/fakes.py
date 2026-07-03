@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from csp_scanner.fetch import HttpResponse
+from cspeek.fetch import HttpResponse
 
 
 class FakeFetcher:

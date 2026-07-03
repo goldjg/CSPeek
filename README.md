@@ -20,41 +20,56 @@ enabled.
 
 ## Requirements
 
-- Python 3.10+ (standard library only; no third-party dependencies)
+- Python 3.10+
+- [Pydantic](https://docs.pydantic.dev/) 2.x (installed automatically as a
+  dependency; used for typed scan/report models)
 
 ## Installation
 
-Clone the repository and run the module directly:
+Clone the repository and install it as a package (an editable install is
+recommended for development):
 
 ```sh
 git clone https://github.com/goldjg/CSPeek
 cd CSPeek
-python -m csp_scanner scan --help
+pip install -e .
+cspeek scan --help
+```
+
+This installs the `cspeek` console command. You can also run it as a
+module without installing a console script:
+
+```sh
+python -m cspeek scan --help
 ```
 
 ## Usage
 
 ```sh
 # Scan a single URL (missing scheme defaults to https://)
-python -m csp_scanner scan https://example.com
-python -m csp_scanner scan example.com
+cspeek scan https://example.com
+cspeek scan example.com
 
 # Scan a file of URLs (one per line; blank lines and # comments ignored)
-python -m csp_scanner scan --input urls.txt
+cspeek scan --input urls.txt
 
 # Write results to JSON / CSV / SQLite (can be combined)
-python -m csp_scanner scan --input urls.txt --json results.json
-python -m csp_scanner scan --input urls.txt --csv results.csv
-python -m csp_scanner scan --input urls.txt --sqlite results.db
+cspeek scan --input urls.txt --json results.json
+cspeek scan --input urls.txt --csv results.csv
+cspeek scan --input urls.txt --sqlite results.db
 
 # Bounded same-origin crawl (opt-in)
-python -m csp_scanner scan https://example.com --crawl --max-depth 2 --max-urls 100
+cspeek scan https://example.com --crawl --max-depth 2 --max-urls 100
 
 # Conservative wordlist-based subdomain discovery (opt-in)
-python -m csp_scanner scan example.com --enumerate-subdomains
+cspeek scan example.com --enumerate-subdomains
+
+# Summarise a prior scan's JSON or SQLite output without rescanning
+cspeek report --json results.json
+cspeek report --sqlite results.db --output summary.json --quiet
 ```
 
-Flags:
+Flags for `cspeek scan`:
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -68,8 +83,21 @@ Flags:
 | `--enumerate-subdomains` | off | Resolve a fixed wordlist of ~20 common subdomains via DNS |
 | `--quiet` | off | Suppress the on-screen report |
 
-Exit code is `0` on success, `1` if any target had a fetch error, `2` for
-usage errors.
+Flags for `cspeek report`:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--json PATH` | — | Read prior JSON results (mutually exclusive with `--sqlite`) |
+| `--sqlite PATH` | — | Read prior SQLite results (mutually exclusive with `--json`) |
+| `--output PATH` | — | Write the summary as JSON to PATH |
+| `--quiet` | off | Suppress the human-readable summary on stdout |
+
+`cspeek report` never issues network requests; it only reads a previously
+written `cspeek scan` output and aggregates it into a summary (totals,
+CSP presence, risk-level distribution, and finding counts by rule).
+
+Exit code is `0` on success, `1` if any target had a fetch error (`scan`
+only), `2` for usage errors.
 
 ## Output formats
 
@@ -189,11 +217,20 @@ wins.
   DNS lookup each. It performs no zone transfers, brute forcing, or
   active scanning.
 
+## Package layout
+
+CSPeek is a `src/`-layout Python package (`src/cspeek/`) with typed
+Pydantic models for fetch results, findings, assessments, scan results,
+and report summaries in `cspeek.models`. Installation is managed through
+`pyproject.toml` (setuptools backend); `pip install -e .` gives an
+editable install for development.
+
 ## Development
 
 ```sh
+pip install -e .
 python -m unittest discover -s tests -v   # all tests use mocked HTTP
-python -m py_compile csp_scanner/*.py
+python -m py_compile src/cspeek/*.py
 ```
 
 Tests never require live internet access.

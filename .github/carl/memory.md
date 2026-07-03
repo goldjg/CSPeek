@@ -21,7 +21,9 @@ screen, JSON, CSV, and SQLite.
   fingerprinting, or active subdomain scanning (fixed wordlist DNS
   resolution only).
 - UI layers, dashboards, web APIs, or service daemons.
-- Third-party Python runtime dependencies (standard library only).
+- Broad third-party runtime dependencies. `pydantic` (2.x) is an approved
+  exception for typed scan/report models; new dependencies still require
+  explicit justification and approval.
 - AI/heuristic judgement in risk scoring — explicit rules only.
 
 ## Architecture summary
@@ -171,7 +173,7 @@ Malformed managed convert block markers cause conversion to fail before writing 
 ## Canonical validation commands
 
 - Run tests: `python -m unittest discover -s tests -v` (all HTTP is mocked; no live network)
-- Syntax check: `python -m py_compile csp_scanner/*.py`
+- Syntax check: `python -m py_compile src/cspeek/*.py`
 - Governance health: `carl doctor` (build CLI from source: `go install github.com/goldjg/carl/cmd/carl@latest`)
 
 ## Current operating assumptions
@@ -194,18 +196,37 @@ The active authority order is:
 
 ## CSPeek implementation decisions
 
-- `csp_scanner/` is a stdlib-only Python 3.10+ package: `inputs` (URL/file
-  normalisation, http/https only), `fetch` (urllib, injectable fetcher for
-  tests, 10s default timeout, 10-redirect cap, records final URL),
-  `assess` (deterministic rule engine), `output` (screen/JSON/CSV/SQLite),
-  `discovery` (bounded BFS crawl + fixed-wordlist DNS subdomain checks),
-  `scanner` (orchestration), `cli` (argparse, `python -m csp_scanner scan`).
+- CSPeek is packaged as an installable CLI: `src/cspeek/` (setuptools
+  `src` layout), `pyproject.toml` (setuptools backend, `pip install -e .`
+  editable installs, `cspeek` console script). The `csp_scanner` package
+  and the `python -m csp_scanner` entry point were removed outright (no
+  deprecation shim) at the maintainer's explicit request; the CLI is
+  `cspeek scan ...` / `cspeek report ...` (or `python -m cspeek ...`).
+- `src/cspeek/` modules: `inputs` (URL/file normalisation, http/https
+  only), `fetch` (urllib, injectable fetcher for tests, 10s default
+  timeout, 10-redirect cap, records final URL), `assess` (deterministic
+  rule engine), `discovery` (bounded BFS crawl + fixed-wordlist DNS
+  subdomain checks), `scanner` (orchestration), `output`
+  (screen/JSON/CSV/SQLite writers), `report` (reads prior JSON/SQLite
+  output and summarises without rescanning), `cli` (argparse, `scan` and
+  `report` subcommands), `models` (typed Pydantic models).
+- `pydantic` (2.x) is an approved runtime dependency for typed models:
+  `Finding`, `Assessment`, `FetchResult`, `ScanResult`, `ScanReport` in
+  `src/cspeek/models.py`. This is the one explicit exception to the
+  historical stdlib-only posture; further dependencies still require
+  explicit approval.
+- `cspeek report --json PATH|--sqlite PATH [--output PATH] [--quiet]`
+  reconstructs typed models from a prior `cspeek scan` JSON file or
+  SQLite `scans` table and aggregates counts (total, with/without CSP,
+  fetch errors, risk-level distribution, findings-by-rule) into a
+  `ScanReport`. It performs no network I/O and never rescans targets.
 - Risk model: fixed per-severity scores (low 5, medium 10, high 20,
   critical 40); level thresholds 0/15/25/40 for low/medium/high/critical;
   rules CSP-001..CSP-043 documented in README. Determinism is a contract
-  assertion covered by tests.
+  assertion covered by tests. This model is unchanged by the packaging
+  refactor.
 - SQLite output appends to a durable `scans` table (schema in
-  `csp_scanner/output.py` and README).
+  `src/cspeek/output.py` and README).
 - Crawling defaults: disabled, same-origin, max depth 2, max URLs 100.
   Subdomain discovery: disabled by default, ~20-word fixed list, one DNS
   lookup per candidate, no active scanning.
@@ -220,4 +241,5 @@ The active authority order is:
 - Should `strict-dynamic` interactions be modelled in the rule set?
 
 ## Last updated
-2026-07-03 by CSPeek scanner implementation PR
+2026-07-03 by CSPeek CLI packaging refactor PR (src/cspeek, pyproject.toml,
+Pydantic models, `cspeek report`)

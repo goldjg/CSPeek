@@ -1,4 +1,4 @@
-"""Entry point for ``python -m csp_scanner``."""
+"""Entry point for ``python -m cspeek``."""
 
 import sys
 

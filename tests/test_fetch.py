@@ -2,7 +2,7 @@
 
 import unittest
 
-from csp_scanner.fetch import fetch_url
+from cspeek.fetch import fetch_url
 
 from tests.fakes import FakeFetcher, html_response, redirect_response
 
